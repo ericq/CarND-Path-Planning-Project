@@ -164,6 +164,55 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 	return {x, y};
 }
 
+// local-help function
+bool IsSafeToMoveLane(double car_s, int current_lane, int target_lane, int prev_size, vector<vector<double>> const &sensor_fusion)
+{
+	cout << "IsSafeToMoveLane() start..."
+		 << " target_lane=" << target_lane << " prev_size=" << prev_size << endl;
+
+	bool is_safe = true;
+
+	assert(current_lane != target_lane);
+
+	if (abs(current_lane - target_lane) > 1) // move more than two lanes, reject
+	{
+		cout << "move more than two lanes. reject" << endl;
+		return false;
+	}
+
+	for (int i = 0; i < sensor_fusion.size(); i++)
+	{
+		// car is in my left lane
+		float other_car_d = sensor_fusion[i][6];
+
+		if (other_car_d < (2 + 4 * target_lane + 2) && other_car_d > (2 + 4 * target_lane - 2))
+		{
+			// this other-car are in my left lane
+			// check whether they will interfere with my lange-change
+			double vx = sensor_fusion[i][3];
+			double vy = sensor_fusion[i][4];
+			double check_speed = sqrt(vx * vx + vy * vy);
+			double check_car_s = sensor_fusion[i][5];
+
+			check_car_s += ((double)prev_size * 0.02 * check_speed); // if using prev points, can project s value out
+			// check s value greator than (mine+gap)
+			if (abs(check_car_s - car_s) < 22)
+			{
+				cout << "foud other car that is too close in the target lange. dist= " << check_car_s << endl;
+				is_safe = false;
+				break;
+			}
+		}
+	}
+
+	if (is_safe)
+		cout << "safe to change to lange " << target_lane << endl;
+	else
+		cout << "NOT safe to change to lange  !!" << target_lane << endl;
+
+	return is_safe;
+}
+
 int main()
 {
 	uWS::Hub h;
@@ -207,7 +256,7 @@ int main()
 	int lane = 1;
 
 	// have a reference velocity to target
-	double ref_vel = 49.5; // mph
+	double ref_vel = 0; // mph. start from 0 here... so it no jerk in the start.
 
 	h.onMessage([&ref_vel, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy, &lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
 																															  uWS::OpCode opCode) {
@@ -252,6 +301,91 @@ int main()
 					// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
 					int prev_size = previous_path_x.size();
+
+					if (prev_size > 0)
+					{
+						car_s = end_path_s;
+					}
+
+					bool too_close = false;
+
+					// find ref_v to use
+					for (int i = 0; i < sensor_fusion.size(); i++)
+					{
+						// car is in my lane
+						float d = sensor_fusion[i][6];
+						if (d < (2 + 4 * lane + 2) && d > (2 + 4 * lane - 2))
+						{
+							double vx = sensor_fusion[i][3];
+							double vy = sensor_fusion[i][4];
+							double check_speed = sqrt(vx * vx + vy * vy);
+							double check_car_s = sensor_fusion[i][5];
+
+							check_car_s += ((double)prev_size * 0.02 * check_speed); // if using prev points, can project s value out
+							// check s value greator than (mine+gap)
+							if ((check_car_s > car_s) && (check_car_s - car_s) < 30)
+							{
+								// lower ego car velocity so we don't rear end the front car, can also flag to prep for lane change
+								//ref_vel = 29.5; //mph
+								too_close = true;
+
+								bool can_go_left = false;
+								bool can_go_right = false;
+
+								// can ego-car go left first?
+								if (lane > 0) // not in left-most lane
+								{
+									int left_lane = lane - 1;
+									// any car within the target zone
+									can_go_left = IsSafeToMoveLane(car_s, lane, left_lane, prev_size, sensor_fusion);
+
+									if (can_go_left)
+									{
+										// make lane change
+										lane = left_lane;
+									}
+								}
+
+								if (!can_go_left)
+								{
+									// can ego-car go right?
+									if (lane < 2) // not in right-most lane
+									{
+										int right_lane = lane + 1;
+
+										can_go_right = IsSafeToMoveLane(car_s, lane, right_lane, prev_size, sensor_fusion);
+										if (can_go_right)
+										{
+											//make lane change
+											lane = right_lane;
+										}
+									}
+								}
+							}
+						}
+					}
+
+					if (too_close)
+					{
+						ref_vel -= 0.224;
+					}
+					else if (ref_vel < 49.5)
+					{
+						ref_vel += 0.224;
+					}
+					else
+					{
+						// prefer to drive in the middle lane
+						bool can_go_middle_lane = false;
+						if (lane != 1)
+						{
+							can_go_middle_lane = IsSafeToMoveLane(car_s, lane, 1, prev_size, sensor_fusion);
+							if (can_go_middle_lane)
+							{
+								lane = 1;
+							}
+						}
+					}
 
 					// create a list of widely spaced (x,y) waypoints, evenly distribuated at 30m
 					// later will interpolate these waypoints with spline and fill it with more points that control speed
