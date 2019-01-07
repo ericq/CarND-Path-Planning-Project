@@ -165,6 +165,24 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 }
 
 // local-help function
+
+enum CarState
+{
+	kReady,
+	kKeepLane,				// d : stay near center of the lane; s: speed limit, otherwise be safe
+	kLaneChangeLeft,		// d: move left; s: same as keepLane
+	kLaneChangeRight,		// d: move right; s: same as keepLane
+	kPrepareLaneChangeLeft, // d: same as keep lane; s: attempt to match position and speed of "gap" in target lane							 // turn on signal
+	kPrepareLaneChangeRight,
+};
+
+// find a gap from target_lane
+// if ret_vale < 0; coud not find it.
+// double
+// findGapToMoveIn(double car_s, int current_lane, int target_lane, int prev_size, vector<vector<double>> const &sensor_fusion)
+// {
+// }
+
 bool IsSafeToMoveLane(double car_s, int current_lane, int target_lane, int prev_size, vector<vector<double>> const &sensor_fusion)
 {
 	cout << "IsSafeToMoveLane() start..."
@@ -195,10 +213,17 @@ bool IsSafeToMoveLane(double car_s, int current_lane, int target_lane, int prev_
 			double check_car_s = sensor_fusion[i][5];
 
 			check_car_s += ((double)prev_size * 0.02 * check_speed); // if using prev points, can project s value out
+
 			// check s value greator than (mine+gap)
-			if (abs(check_car_s - car_s) < 22)
+			if ((check_car_s > car_s) && (check_car_s - car_s) < 35)
 			{
-				cout << "foud other car that is too close in the target lange. dist= " << check_car_s << endl;
+				cout << "foud a front car that is TOO close in the target" << target_lane << " lane. dist= " << check_car_s - car_s << endl;
+				is_safe = false;
+				break;
+			}
+			else if ((check_car_s < car_s) && (car_s - check_car_s) < 15)
+			{
+				cout << "foud a back car that is TOO close in the target" << target_lane << " lane. dist= " << car_s - check_car_s << endl;
 				is_safe = false;
 				break;
 			}
@@ -252,14 +277,21 @@ int main()
 		map_waypoints_dy.push_back(d_y);
 	}
 
-	// start in lane 1
+	//
+	CarState car_state = CarState::kReady;
+	// start in lane 1 (left=0; middle=1; right=2)
 	int lane = 1;
+
+	// use this to mark whether the car is in the middle of transitioning
+	// -1 : not changing lane.
+	// otherwise, need to check whether it has been achived and then unset this value
+	int changing_lane_to = -1;
 
 	// have a reference velocity to target
 	double ref_vel = 0; // mph. start from 0 here... so it no jerk in the start.
 
-	h.onMessage([&ref_vel, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy, &lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
-																															  uWS::OpCode opCode) {
+	h.onMessage([&ref_vel, &changing_lane_to, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy, &lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+																																				 uWS::OpCode opCode) {
 		// "42" at the start of the message means there's a websocket message event.
 		// The 4 signifies a websocket message
 		// The 2 signifies a websocket event
@@ -308,6 +340,18 @@ int main()
 					}
 
 					bool too_close = false;
+					bool too_too_close = false;
+
+					// if this car has arrived at lane to be at -- if it's instructed for a lange change
+					if (changing_lane_to != -1)
+					{
+						double tobe_d_val = changing_lane_to * 4.0 + 2.0;
+						if (abs(car_d - tobe_d_val) < 0.2)
+						{
+							changing_lane_to = -1; // mark ego car is almost in to be position
+							cout << "almost in to be position **" << endl;
+						}
+					}
 
 					// find ref_v to use
 					for (int i = 0; i < sensor_fusion.size(); i++)
@@ -329,37 +373,52 @@ int main()
 								//ref_vel = 29.5; //mph
 								too_close = true;
 
-								bool can_go_left = false;
-								bool can_go_right = false;
-
-								// can ego-car go left first?
-								if (lane > 0) // not in left-most lane
+								if ((check_car_s > car_s) && (check_car_s - car_s) < 10)
 								{
-									int left_lane = lane - 1;
-									// any car within the target zone
-									can_go_left = IsSafeToMoveLane(car_s, lane, left_lane, prev_size, sensor_fusion);
-
-									if (can_go_left)
-									{
-										// make lane change
-										lane = left_lane;
-									}
+									too_too_close = true;
 								}
 
-								if (!can_go_left)
+								// if this car is not excuting lane change, try to go left or right.
+								if (changing_lane_to == -1)
 								{
-									// can ego-car go right?
-									if (lane < 2) // not in right-most lane
-									{
-										int right_lane = lane + 1;
+									bool can_go_left = false;
+									bool can_go_right = false;
 
-										can_go_right = IsSafeToMoveLane(car_s, lane, right_lane, prev_size, sensor_fusion);
-										if (can_go_right)
+									// can ego-car go left first?
+									if (lane > 0) // not in left-most lane
+									{
+										int left_lane = lane - 1;
+										// any car within the target zone
+										can_go_left = IsSafeToMoveLane(car_s, lane, left_lane, prev_size, sensor_fusion);
+
+										if (can_go_left)
 										{
-											//make lane change
-											lane = right_lane;
+											// make lane change
+											lane = left_lane;
+											changing_lane_to = lane; // mark starting of lange change
 										}
 									}
+
+									if (!can_go_left)
+									{
+										// can ego-car go right?
+										if (lane < 2) // not in right-most lane
+										{
+											int right_lane = lane + 1;
+
+											can_go_right = IsSafeToMoveLane(car_s, lane, right_lane, prev_size, sensor_fusion);
+											if (can_go_right)
+											{
+												//make lane change
+												lane = right_lane;
+												changing_lane_to = lane; // mark starting of lange change
+											}
+										}
+									}
+								}
+								else
+								{
+									cout << "in middle of lane changing... continue ** " << endl;
 								}
 							}
 						}
@@ -368,6 +427,8 @@ int main()
 					if (too_close)
 					{
 						ref_vel -= 0.224;
+						if (too_too_close)
+							ref_vel -= 0.448;
 					}
 					else if (ref_vel < 49.5)
 					{
