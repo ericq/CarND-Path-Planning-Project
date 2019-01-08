@@ -215,13 +215,13 @@ bool IsSafeToMoveLane(double car_s, int current_lane, int target_lane, int prev_
 			check_car_s += ((double)prev_size * 0.02 * check_speed); // if using prev points, can project s value out
 
 			// check s value greator than (mine+gap)
-			if ((check_car_s > car_s) && (check_car_s - car_s) < 40)
+			if ((check_car_s > car_s) && (check_car_s - car_s) < 30)
 			{
 				cout << "foud a front car that is TOO close in the target" << target_lane << " lane. dist= " << check_car_s - car_s << endl;
 				is_safe = false;
 				break;
 			}
-			else if ((check_car_s < car_s) && (car_s - check_car_s) < 20)
+			else if ((check_car_s < car_s) && (car_s - check_car_s) < 15)
 			{
 				cout << "foud a back car that is TOO close in the target" << target_lane << " lane. dist= " << car_s - check_car_s << endl;
 				is_safe = false;
